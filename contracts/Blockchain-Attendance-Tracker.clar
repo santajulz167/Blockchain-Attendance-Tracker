@@ -5,6 +5,11 @@
 (define-constant ERR_INVALID_DATE (err u103))
 (define-constant ERR_USER_NOT_FOUND (err u104))
 (define-constant ERR_ALREADY_REGISTERED (err u105))
+(define-constant ACHIEVEMENT_PERFECT_WEEK "perfect-week")
+(define-constant ACHIEVEMENT_PERFECT_MONTH "perfect-month")
+(define-constant ACHIEVEMENT_STREAK_10 "streak-10")
+(define-constant ACHIEVEMENT_STREAK_30 "streak-30")
+(define-constant ACHIEVEMENT_VETERAN_100 "veteran-100")
 
 (define-map users
   { user-id: principal }
@@ -236,4 +241,105 @@
 
 (define-read-only (get-contract-owner)
   (ok CONTRACT_OWNER)
+)
+
+
+
+(define-map user-achievements
+  { user-id: principal, achievement-id: (string-ascii 20) }
+  {
+    earned-date: uint,
+    earned-block: uint,
+    achievement-name: (string-ascii 50)
+  }
+)
+
+(define-map user-streaks
+  { user-id: principal }
+  {
+    current-streak: uint,
+    last-attendance-date: uint,
+    max-streak: uint
+  }
+)
+
+(define-private (check-and-award-achievements (user principal) (current-date uint))
+  (let
+    (
+      (user-data (unwrap-panic (map-get? users { user-id: user })))
+      (current-streak-data (default-to 
+        { current-streak: u0, last-attendance-date: u0, max-streak: u0 }
+        (map-get? user-streaks { user-id: user })))
+    )
+    (begin
+      (update-user-streak user current-date current-streak-data)
+      (award-streak-achievements user current-streak-data)
+      (award-total-days-achievements user (get total-days user-data))
+    )
+  )
+)
+
+(define-private (update-user-streak (user principal) (current-date uint) (streak-data { current-streak: uint, last-attendance-date: uint, max-streak: uint }))
+  (let
+    (
+      (is-consecutive (is-eq (get last-attendance-date streak-data) (- current-date u1)))
+      (new-streak (if is-consecutive (+ (get current-streak streak-data) u1) u1))
+      (new-max-streak (if (> new-streak (get max-streak streak-data)) new-streak (get max-streak streak-data)))
+    )
+    (map-set user-streaks
+      { user-id: user }
+      {
+        current-streak: new-streak,
+        last-attendance-date: current-date,
+        max-streak: new-max-streak
+      }
+    )
+  )
+)
+
+(define-private (award-streak-achievements (user principal) (streak-data { current-streak: uint, last-attendance-date: uint, max-streak: uint }))
+  (begin
+    (if (and (>= (get current-streak streak-data) u10) (is-none (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_STREAK_10 })))
+      (map-set user-achievements
+        { user-id: user, achievement-id: ACHIEVEMENT_STREAK_10 }
+        { earned-date: (get last-attendance-date streak-data), earned-block: stacks-block-height, achievement-name: "10-Day Streak Champion" }
+      )
+      true
+    )
+    (if (and (>= (get current-streak streak-data) u30) (is-none (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_STREAK_30 })))
+      (map-set user-achievements
+        { user-id: user, achievement-id: ACHIEVEMENT_STREAK_30 }
+        { earned-date: (get last-attendance-date streak-data), earned-block: stacks-block-height, achievement-name: "30-Day Streak Legend" }
+      )
+      true
+    )
+  )
+)
+
+(define-private (award-total-days-achievements (user principal) (total-days uint))
+  (if (and (>= total-days u100) (is-none (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_VETERAN_100 })))
+    (map-set user-achievements
+      { user-id: user, achievement-id: ACHIEVEMENT_VETERAN_100 }
+      { earned-date: u0, earned-block: stacks-block-height, achievement-name: "100-Day Veteran" }
+    )
+    true
+  )
+)
+
+(define-read-only (get-user-achievements (user principal))
+  (list
+    (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_PERFECT_WEEK })
+    (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_PERFECT_MONTH })
+    (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_STREAK_10 })
+    (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_STREAK_30 })
+    (map-get? user-achievements { user-id: user, achievement-id: ACHIEVEMENT_VETERAN_100 })
+  )
+)
+
+(define-read-only (get-user-streak (user principal))
+  (map-get? user-streaks { user-id: user })
+)
+
+(define-read-only (has-achievement (user principal) (achievement-id (string-ascii 20)))
+  (is-some (map-get? user-achievements { user-id: user, achievement-id: achievement-id }))
 )
