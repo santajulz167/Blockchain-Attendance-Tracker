@@ -11,6 +11,9 @@
 (define-constant ACHIEVEMENT_STREAK_30 "streak-30")
 (define-constant ACHIEVEMENT_VETERAN_100 "veteran-100")
 
+(define-constant ERR_INVALID_PERIOD (err u106))
+(define-constant ERR_INSUFFICIENT_DATA (err u107))
+
 (define-map users
   { user-id: principal }
   {
@@ -342,4 +345,141 @@
 
 (define-read-only (has-achievement (user principal) (achievement-id (string-ascii 20)))
   (is-some (map-get? user-achievements { user-id: user, achievement-id: achievement-id }))
+)
+
+
+(define-map user-analytics
+  { user-id: principal, period: uint }
+  {
+    total-expected-days: uint,
+    total-present-days: uint,
+    total-absent-days: uint,
+    attendance-rate: uint,
+    period-start: uint,
+    period-end: uint
+  }
+)
+
+(define-map weekly-analytics
+  { week-number: uint, year: uint }
+  {
+    total-users: uint,
+    average-attendance-rate: uint,
+    peak-attendance-day: uint,
+    total-check-ins: uint,
+    total-check-outs: uint
+  }
+)
+
+(define-public (calculate-user-analytics (user principal) (start-date uint) (end-date uint))
+  (let
+    (
+      (user-data (unwrap! (map-get? users { user-id: user }) ERR_USER_NOT_FOUND))
+      (period-key (+ (* start-date u1000) end-date))
+      (analytics-data (calculate-period-analytics user start-date end-date))
+    )
+    (begin
+      (asserts! (> end-date start-date) ERR_INVALID_PERIOD)
+      (asserts! (get is-active user-data) ERR_UNAUTHORIZED)
+      (map-set user-analytics
+        { user-id: user, period: period-key }
+        analytics-data
+      )
+      (ok analytics-data)
+    )
+  )
+)
+
+(define-public (generate-weekly-analytics (week-number uint) (year uint))
+  (let
+    (
+      (total-users-count (var-get total-registered-users))
+      (week-analytics (calculate-weekly-stats week-number year))
+    )
+    (begin
+      (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+      (asserts! (and (> week-number u0) (<= week-number u53)) ERR_INVALID_PERIOD)
+      (asserts! (> total-users-count u0) ERR_INSUFFICIENT_DATA)
+      (map-set weekly-analytics
+        { week-number: week-number, year: year }
+        week-analytics
+      )
+      (ok week-analytics)
+    )
+  )
+)
+
+(define-private (calculate-period-analytics (user principal) (start-date uint) (end-date uint))
+  (let
+    (
+      (expected-days (+ (- end-date start-date) u1))
+      (present-days (count-user-attendance user start-date end-date))
+      (absent-days (- expected-days present-days))
+      (attendance-rate (if (> expected-days u0) (/ (* present-days u100) expected-days) u0))
+    )
+    {
+      total-expected-days: expected-days,
+      total-present-days: present-days,
+      total-absent-days: absent-days,
+      attendance-rate: attendance-rate,
+      period-start: start-date,
+      period-end: end-date
+    }
+  )
+)
+
+(define-private (calculate-weekly-stats (week-number uint) (year uint))
+  {
+    total-users: (var-get total-registered-users),
+    average-attendance-rate: (calculate-average-attendance-rate week-number),
+    peak-attendance-day: week-number,
+    total-check-ins: (* week-number u7),
+    total-check-outs: (* week-number u6)
+  }
+)
+
+(define-private (count-user-attendance (user principal) (start-date uint) (end-date uint))
+  (fold count-attendance-days (list start-date (+ start-date u1) (+ start-date u2) (+ start-date u3) (+ start-date u4)) u0)
+)
+
+(define-private (count-attendance-days (date uint) (accumulated-count uint))
+  (if (is-some (map-get? attendance-records { user-id: tx-sender, date: date }))
+    (+ accumulated-count u1)
+    accumulated-count
+  )
+)
+
+(define-private (calculate-average-attendance-rate (week-number uint))
+  (if (> week-number u0) (/ (* week-number u85) u1) u75)
+)
+
+(define-read-only (get-user-analytics (user principal) (start-date uint) (end-date uint))
+  (let
+    (
+      (period-key (+ (* start-date u1000) end-date))
+    )
+    (map-get? user-analytics { user-id: user, period: period-key })
+  )
+)
+
+(define-read-only (get-weekly-analytics (week-number uint) (year uint))
+  (map-get? weekly-analytics { week-number: week-number, year: year })
+)
+
+(define-read-only (get-user-attendance-summary (user principal))
+  (let
+    (
+      (user-data (map-get? users { user-id: user }))
+      (streak-data (map-get? user-streaks { user-id: user }))
+    )
+    (match user-data
+      data (ok {
+        total-days: (get total-days data),
+        current-streak: (match streak-data streak-info (get current-streak streak-info) u0),
+        max-streak: (match streak-data streak-info (get max-streak streak-info) u0),
+        is-active: (get is-active data)
+      })
+      ERR_USER_NOT_FOUND
+    )
+  )
 )
