@@ -14,6 +14,10 @@
 (define-constant ERR_INVALID_PERIOD (err u106))
 (define-constant ERR_INSUFFICIENT_DATA (err u107))
 
+(define-constant ERR_EXCUSE_NOT_FOUND (err u108))
+(define-constant ERR_EXCUSE_ALREADY_PROCESSED (err u109))
+(define-constant ERR_EXCUSE_ALREADY_SUBMITTED (err u110))
+
 (define-map users
   { user-id: principal }
   {
@@ -482,4 +486,113 @@
       ERR_USER_NOT_FOUND
     )
   )
+)
+
+(define-map excuse-requests
+  { user-id: principal, date: uint }
+  {
+    reason: (string-ascii 200),
+    submitted-block: uint,
+    status: (string-ascii 10),
+    admin-notes: (optional (string-ascii 100))
+  }
+)
+
+(define-map excuse-history
+  { user-id: principal }
+  {
+    total-submitted: uint,
+    total-approved: uint,
+    total-denied: uint
+  }
+)
+
+(define-public (submit-excuse-request (date uint) (reason (string-ascii 200)))
+  (let
+    (
+      (user-data (unwrap! (map-get? users { user-id: tx-sender }) ERR_USER_NOT_FOUND))
+      (existing-request (map-get? excuse-requests { user-id: tx-sender, date: date }))
+      (current-history (default-to
+        { total-submitted: u0, total-approved: u0, total-denied: u0 }
+        (map-get? excuse-history { user-id: tx-sender })
+      ))
+    )
+    (begin
+      (asserts! (get is-active user-data) ERR_UNAUTHORIZED)
+      (asserts! (> date u0) ERR_INVALID_DATE)
+      (asserts! (is-none existing-request) ERR_EXCUSE_ALREADY_SUBMITTED)
+      (map-set excuse-requests
+        { user-id: tx-sender, date: date }
+        {
+          reason: reason,
+          submitted-block: stacks-block-height,
+          status: "pending",
+          admin-notes: none
+        }
+      )
+      (map-set excuse-history
+        { user-id: tx-sender }
+        (merge current-history { total-submitted: (+ (get total-submitted current-history) u1) })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (approve-excuse (user principal) (date uint) (admin-notes (optional (string-ascii 100))))
+  (let
+    (
+      (excuse-request (unwrap! (map-get? excuse-requests { user-id: user, date: date }) ERR_EXCUSE_NOT_FOUND))
+      (current-history (default-to
+        { total-submitted: u0, total-approved: u0, total-denied: u0 }
+        (map-get? excuse-history { user-id: user })
+      ))
+    )
+    (begin
+      (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get status excuse-request) "pending") ERR_EXCUSE_ALREADY_PROCESSED)
+      (map-set excuse-requests
+        { user-id: user, date: date }
+        (merge excuse-request { status: "approved", admin-notes: admin-notes })
+      )
+      (map-set excuse-history
+        { user-id: user }
+        (merge current-history { total-approved: (+ (get total-approved current-history) u1) })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (deny-excuse (user principal) (date uint) (admin-notes (optional (string-ascii 100))))
+  (let
+    (
+      (excuse-request (unwrap! (map-get? excuse-requests { user-id: user, date: date }) ERR_EXCUSE_NOT_FOUND))
+      (current-history (default-to
+        { total-submitted: u0, total-approved: u0, total-denied: u0 }
+        (map-get? excuse-history { user-id: user })
+      ))
+    )
+    (begin
+      (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get status excuse-request) "pending") ERR_EXCUSE_ALREADY_PROCESSED)
+      (map-set excuse-requests
+        { user-id: user, date: date }
+        (merge excuse-request { status: "denied", admin-notes: admin-notes })
+      )
+      (map-set excuse-history
+        { user-id: user }
+        (merge current-history { total-denied: (+ (get total-denied current-history) u1) })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-read-only (get-excuse-request (user principal) (date uint))
+  (map-get? excuse-requests { user-id: user, date: date })
+)
+
+(define-read-only (get-excuse-history (user principal))
+  (map-get? excuse-history { user-id: user })
 )
