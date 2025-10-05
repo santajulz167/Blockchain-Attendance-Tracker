@@ -18,6 +18,9 @@
 (define-constant ERR_EXCUSE_ALREADY_PROCESSED (err u109))
 (define-constant ERR_EXCUSE_ALREADY_SUBMITTED (err u110))
 
+(define-constant ERR_INSUFFICIENT_POINTS (err u111))
+(define-constant ERR_INVALID_AMOUNT (err u112))
+
 (define-map users
   { user-id: principal }
   {
@@ -595,4 +598,89 @@
 
 (define-read-only (get-excuse-history (user principal))
   (map-get? excuse-history { user-id: user })
+)
+
+(define-map user-reputation
+  { user-id: principal }
+  {
+    current-points: uint,
+    total-earned: uint,
+    total-redeemed: uint,
+    last-reward-block: uint
+  }
+)
+
+(define-map reputation-config
+  { config-key: (string-ascii 20) }
+  { multiplier: uint }
+)
+
+(define-data-var total-points-distributed uint u0)
+(define-data-var base-reward-points uint u10)
+
+(define-public (configure-reward-multiplier (config-key (string-ascii 20)) (multiplier uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> multiplier u0) ERR_INVALID_AMOUNT)
+    (map-set reputation-config
+      { config-key: config-key }
+      { multiplier: multiplier }
+    )
+    (ok true)
+  )
+)
+
+(define-public (redeem-reputation-points (amount uint))
+  (let
+    (
+      (reputation-data (default-to
+        { current-points: u0, total-earned: u0, total-redeemed: u0, last-reward-block: u0 }
+        (map-get? user-reputation { user-id: tx-sender })
+      ))
+    )
+    (begin
+      (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+      (asserts! (>= (get current-points reputation-data) amount) ERR_INSUFFICIENT_POINTS)
+      (map-set user-reputation
+        { user-id: tx-sender }
+        (merge reputation-data {
+          current-points: (- (get current-points reputation-data) amount),
+          total-redeemed: (+ (get total-redeemed reputation-data) amount)
+        })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-private (award-reputation-points (user principal))
+  (let
+    (
+      (reputation-data (default-to
+        { current-points: u0, total-earned: u0, total-redeemed: u0, last-reward-block: u0 }
+        (map-get? user-reputation { user-id: user })
+      ))
+      (points-to-award (var-get base-reward-points))
+    )
+    (begin
+      (map-set user-reputation
+        { user-id: user }
+        {
+          current-points: (+ (get current-points reputation-data) points-to-award),
+          total-earned: (+ (get total-earned reputation-data) points-to-award),
+          total-redeemed: (get total-redeemed reputation-data),
+          last-reward-block: stacks-block-height
+        }
+      )
+      (var-set total-points-distributed (+ (var-get total-points-distributed) points-to-award))
+    )
+  )
+)
+
+(define-read-only (get-reputation-balance (user principal))
+  (map-get? user-reputation { user-id: user })
+)
+
+(define-read-only (get-total-points-distributed)
+  (ok (var-get total-points-distributed))
 )
