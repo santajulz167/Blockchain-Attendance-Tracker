@@ -21,6 +21,10 @@
 (define-constant ERR_INSUFFICIENT_POINTS (err u111))
 (define-constant ERR_INVALID_AMOUNT (err u112))
 
+
+(define-constant ERR_REPORT_NOT_FOUND (err u113))
+(define-constant ERR_INVALID_RANGE (err u114))
+
 (define-map users
   { user-id: principal }
   {
@@ -683,4 +687,109 @@
 
 (define-read-only (get-total-points-distributed)
   (ok (var-get total-points-distributed))
+)
+
+(define-map attendance-reports
+  { report-id: uint }
+  {
+    user-id: principal,
+    generated-by: principal,
+    period-start: uint,
+    period-end: uint,
+    total-expected: uint,
+    total-present: uint,
+    total-absent: uint,
+    attendance-percentage: uint,
+    current-streak: uint,
+    generated-block: uint,
+    improvement-indicator: int
+  }
+)
+
+(define-map user-report-index
+  { user-id: principal, report-number: uint }
+  { report-id: uint }
+)
+
+(define-map user-report-count
+  { user-id: principal }
+  { count: uint }
+)
+
+(define-data-var next-report-id uint u1)
+
+(define-public (generate-attendance-report (user principal) (start-date uint) (end-date uint))
+  (let
+    (
+      (user-data (unwrap! (map-get? users { user-id: user }) ERR_USER_NOT_FOUND))
+      (streak-data (default-to { current-streak: u0, last-attendance-date: u0, max-streak: u0 } (map-get? user-streaks { user-id: user })))
+      (report-id (var-get next-report-id))
+      (user-reports (default-to { count: u0 } (map-get? user-report-count { user-id: user })))
+      (expected-days (+ (- end-date start-date) u1))
+      (present-days (count-days-present user start-date end-date expected-days))
+      (absent-days (- expected-days present-days))
+      (attendance-pct (if (> expected-days u0) (/ (* present-days u100) expected-days) u0))
+      (improvement (calculate-improvement user (get count user-reports) attendance-pct))
+    )
+    (begin
+      (asserts! (or (is-eq tx-sender CONTRACT_OWNER) (is-eq tx-sender user)) ERR_UNAUTHORIZED)
+      (asserts! (> end-date start-date) ERR_INVALID_RANGE)
+      (map-set attendance-reports
+        { report-id: report-id }
+        {
+          user-id: user,
+          generated-by: tx-sender,
+          period-start: start-date,
+          period-end: end-date,
+          total-expected: expected-days,
+          total-present: present-days,
+          total-absent: absent-days,
+          attendance-percentage: attendance-pct,
+          current-streak: (get current-streak streak-data),
+          generated-block: stacks-block-height,
+          improvement-indicator: improvement
+        }
+      )
+      (map-set user-report-index { user-id: user, report-number: (get count user-reports) } { report-id: report-id })
+      (map-set user-report-count { user-id: user } { count: (+ (get count user-reports) u1) })
+      (var-set next-report-id (+ report-id u1))
+      (ok report-id)
+    )
+  )
+)
+
+(define-private (count-days-present (user principal) (start uint) (end uint) (expected uint))
+  (fold check-day-present (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9) u0)
+)
+
+(define-private (check-day-present (offset uint) (count uint))
+  count
+)
+
+(define-private (calculate-improvement (user principal) (report-num uint) (current-pct uint))
+  (if (is-eq report-num u0)
+    0
+    (match (map-get? user-report-index { user-id: user, report-number: (- report-num u1) })
+      prev-index (match (map-get? attendance-reports { report-id: (get report-id prev-index) })
+        prev-report (- (to-int current-pct) (to-int (get attendance-percentage prev-report)))
+        0
+      )
+      0
+    )
+  )
+)
+
+(define-read-only (get-attendance-report (report-id uint))
+  (map-get? attendance-reports { report-id: report-id })
+)
+
+(define-read-only (get-user-report-by-number (user principal) (report-number uint))
+  (match (map-get? user-report-index { user-id: user, report-number: report-number })
+    index-data (map-get? attendance-reports { report-id: (get report-id index-data) })
+    none
+  )
+)
+
+(define-read-only (get-user-total-reports (user principal))
+  (map-get? user-report-count { user-id: user })
 )
